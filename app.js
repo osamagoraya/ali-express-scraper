@@ -9,13 +9,26 @@ const BROWSER_WS = process.env.BROWSER_WS;
 // --- STATE MANAGEMENT ---
 const tasks = {};
 
-// --- THE SCRAPER FUNCTION (UPDATED WITH CONDITIONAL LOGIC) ---
+// --- THE SCRAPER FUNCTION (UPDATED WITH URL STANDARDIZATION) ---
 async function performScraping(taskId, url) {
   console.log(`[${taskId}] Starting scrape for: ${url}`);
   let browser;
   let page; 
 
   try {
+    // --- NEW: Standardize the URL to use www.aliexpress.com ---
+    let standardizedUrl = url;
+    try {
+        const urlObject = new URL(url);
+        if (urlObject.hostname.endsWith('aliexpress.com')) {
+            urlObject.hostname = 'www.aliexpress.com';
+            standardizedUrl = urlObject.toString();
+            console.log(`[${taskId}] Standardized URL to: ${standardizedUrl}`);
+        }
+    } catch (e) {
+        console.error(`[${taskId}] Could not parse URL, using original: ${url}`);
+    }
+
     console.log(`[${taskId}] Connecting to Bright Data browser...`);
     browser = await puppeteer.connect({
       browserWSEndpoint: BROWSER_WS,
@@ -24,7 +37,7 @@ async function performScraping(taskId, url) {
 
     page = await browser.newPage();
     
-    const urlWithParams = `${url}${url.includes('?') ? '&' : '?'}currency=USD&ship_to=US`;
+    const urlWithParams = `${standardizedUrl}${standardizedUrl.includes('?') ? '&' : '?'}currency=USD&ship_to=US`;
     console.log(`[${taskId}] Navigating to page with USD currency: ${urlWithParams}`);
     await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
