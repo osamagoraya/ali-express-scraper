@@ -53,32 +53,25 @@ async function performScraping(taskId, url) {
         throw e; // Re-throw the error to fail the task
     }
 
-
-    console.log(`[${taskId}] Scrolling page to load all content...`);
+    // --- REVISED SCROLLING LOGIC ---
+    console.log(`[${taskId}] Scrolling page to trigger lazy-loading...`);
     await page.evaluate(async () => {
         await new Promise((resolve) => {
             let totalHeight = 0;
-            const distance = 200;
+            const distance = 300; // Scroll a bit further each time
+            const scrollDelay = 150; // Wait a bit between scrolls
             const timer = setInterval(() => {
                 const scrollHeight = document.body.scrollHeight;
                 window.scrollBy(0, distance);
                 totalHeight += distance;
-                if (totalHeight >= scrollHeight) {
+                if (totalHeight >= scrollHeight - window.innerHeight) {
                     clearInterval(timer);
                     resolve();
                 }
-            }, 100);
+            }, scrollDelay);
         });
     });
     console.log(`[${taskId}] Scrolling complete.`);
-
-    console.log(`[${taskId}] Waiting for product description section...`);
-    try {
-      // --- CHANGE: Increased timeout slightly for description ---
-      await page.waitForSelector('#product-description', { timeout: 20000 });
-    } catch (e) {
-      console.log(`[${taskId}] Warning: Product description section not found or timed out after scrolling. Continuing without it.`);
-    }
 
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
 
@@ -110,7 +103,14 @@ async function performScraping(taskId, url) {
             });
         });
 
-        const descriptionContainer = document.querySelector('#product-description');
+        // --- REVISED DESCRIPTION EXTRACTION LOGIC ---
+        const descriptionSelectors = ['#product-description', '[id="nav-description"]', '[class*="description--wrap"]'];
+        let descriptionContainer = null;
+        for (const selector of descriptionSelectors) {
+            descriptionContainer = document.querySelector(selector);
+            if (descriptionContainer) break;
+        }
+
         const descriptionImages = descriptionContainer 
             ? Array.from(descriptionContainer.querySelectorAll('img')).map(img => img.src) 
             : [];
@@ -308,3 +308,4 @@ const server = app.listen(PORT, () => {
 
 server.keepAliveTimeout = 120 * 1000;
 server.headersTimeout = 120 * 1000;
+
