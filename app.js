@@ -16,7 +16,7 @@ async function performScraping(taskId, url) {
   let page; 
 
   try {
-    // --- NEW: Standardize the URL to use www.aliexpress.com ---
+    // --- Standardize the URL to use www.aliexpress.com ---
     let standardizedUrl = url;
     try {
         const urlObject = new URL(url);
@@ -42,7 +42,17 @@ async function performScraping(taskId, url) {
     await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
     console.log(`[${taskId}] Waiting for product info to load...`);
-    await page.waitForSelector('[class*="sku--wrap"]', { timeout: 90000 });
+    try {
+      // --- CHANGE: Increased timeout to 110 seconds for more reliability ---
+      await page.waitForSelector('[class*="sku--wrap"]', { timeout: 110000 });
+    } catch(e) {
+        console.error(`[${taskId}] CRITICAL: Timed out waiting for main product info. This might be a captcha or a page load issue.`);
+        // --- NEW: Take a screenshot on failure for easier debugging ---
+        const screenshotBuffer = await page.screenshot({ encoding: 'base64' });
+        console.error(`[${taskId}] Screenshot on failure (base64): data:image/png;base64,${screenshotBuffer}`);
+        throw e; // Re-throw the error to fail the task
+    }
+
 
     console.log(`[${taskId}] Scrolling page to load all content...`);
     await page.evaluate(async () => {
@@ -64,7 +74,8 @@ async function performScraping(taskId, url) {
 
     console.log(`[${taskId}] Waiting for product description section...`);
     try {
-      await page.waitForSelector('#product-description', { timeout: 15000 });
+      // --- CHANGE: Increased timeout slightly for description ---
+      await page.waitForSelector('#product-description', { timeout: 20000 });
     } catch (e) {
       console.log(`[${taskId}] Warning: Product description section not found or timed out after scrolling. Continuing without it.`);
     }
