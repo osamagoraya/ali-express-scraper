@@ -9,7 +9,7 @@ const BROWSER_WS = process.env.BROWSER_WS;
 // --- STATE MANAGEMENT ---
 const tasks = {};
 
-// --- THE SCRAPER FUNCTION (UPDATED DESCRIPTION LOGIC) ---
+// --- THE SCRAPER FUNCTION (UPDATED WITH SCROLLING) ---
 async function performScraping(taskId, url) {
   console.log(`[${taskId}] Starting scrape for: ${url}`);
   let browser;
@@ -31,9 +31,32 @@ async function performScraping(taskId, url) {
     console.log(`[${taskId}] Waiting for product info to load...`);
     await page.waitForSelector('[class*="sku--wrap"]', { timeout: 90000 });
 
-    // --- NEW: Explicitly wait for the description section to ensure it's loaded ---
+    // --- NEW: Scroll down to trigger lazy-loaded content ---
+    console.log(`[${taskId}] Scrolling page to load all content...`);
+    await page.evaluate(async () => {
+        await new Promise((resolve) => {
+            let totalHeight = 0;
+            const distance = 200; // Scroll by 200px increments
+            const timer = setInterval(() => {
+                const scrollHeight = document.body.scrollHeight;
+                window.scrollBy(0, distance);
+                totalHeight += distance;
+                if (totalHeight >= scrollHeight) {
+                    clearInterval(timer);
+                    resolve();
+                }
+            }, 100); // Scroll every 100ms
+        });
+    });
+    console.log(`[${taskId}] Scrolling complete.`);
+
+    // --- Wait for the description, but don't fail if it's missing ---
     console.log(`[${taskId}] Waiting for product description section...`);
-    await page.waitForSelector('#product-description', { timeout: 60000 });
+    try {
+      await page.waitForSelector('#product-description', { timeout: 15000 });
+    } catch (e) {
+      console.log(`[${taskId}] Warning: Product description section not found or timed out after scrolling. Continuing without it.`);
+    }
 
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
 
@@ -42,20 +65,17 @@ async function performScraping(taskId, url) {
         const getText = (selector) => document.querySelector(selector)?.innerText.trim() || null;
         const getHtml = (selector) => document.querySelector(selector)?.outerHTML || null;
 
-        // Extract available colors with name, image, and selection state
         const availableColors = Array.from(document.querySelectorAll('[class*="sku-item--image"]')).map(el => ({
             name: el.querySelector('img')?.alt || null,
             image: el.querySelector('img')?.src.replace('_220x220q75.jpg_.avif', '') || null,
             isSelected: el.classList.contains('sku-item--selected')
         }));
         
-        // Extract available sizes with size and selection state
         const availableSizes = Array.from(document.querySelectorAll('[class*="sku-item--text"]')).map(el => ({
             size: el.title || el.innerText.trim(),
             isSelected: el.classList.contains('sku-item--selected')
         }));
 
-        // Extract specifications into a key-value object
         const specifications = {};
         document.querySelectorAll('[class*="specification--line"]').forEach(li => {
             const props = li.querySelectorAll('[class*="specification--prop"]');
@@ -68,7 +88,6 @@ async function performScraping(taskId, url) {
             });
         });
 
-        // --- UPDATED: Robustly extract all images from within the description div ---
         const descriptionContainer = document.querySelector('#product-description');
         const descriptionImages = descriptionContainer 
             ? Array.from(descriptionContainer.querySelectorAll('img')).map(img => img.src) 
@@ -85,7 +104,7 @@ async function performScraping(taskId, url) {
             selectedSize: availableSizes.find(s => s.isSelected)?.size || null,
             specifications,
             description: {
-                text: [], // As per your sample JSON
+                text: [],
                 images: descriptionImages,
             },
             productHTML: getHtml('.pdp-info'),
@@ -102,7 +121,7 @@ async function performScraping(taskId, url) {
     
     for (const colorEl of colorElements) {
         await colorEl.click();
-        await new Promise(resolve => setTimeout(resolve, 300)); // Wait for size options to update
+        await new Promise(resolve => setTimeout(resolve, 300));
         const currentColorName = await colorEl.$eval('img', img => img.alt);
 
         for (const sizeEl of sizeElements) {
@@ -147,9 +166,9 @@ async function performScraping(taskId, url) {
         availableColors: pageData.availableColors,
         selectedSize: pageData.selectedSize,
         availableSizes: pageData.availableSizes,
-        storeInfo: {}, // As per your sample JSON
+        storeInfo: {},
         coupon: pageData.coupon,
-        video: null, // As per your sample JSON
+        video: null,
         specifications: pageData.specifications,
         description: pageData.description,
         productHTML: pageData.productHTML
@@ -224,3 +243,4 @@ const server = app.listen(PORT, () => {
 
 server.keepAliveTimeout = 120 * 1000;
 server.headersTimeout = 120 * 1000;
+
