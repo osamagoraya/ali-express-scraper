@@ -9,7 +9,7 @@ const BROWSER_WS = process.env.BROWSER_WS;
 // --- STATE MANAGEMENT ---
 const tasks = {};
 
-// --- THE SCRAPER FUNCTION (Completely Rebuilt) ---
+// --- THE SCRAPER FUNCTION (UPDATED DESCRIPTION LOGIC) ---
 async function performScraping(taskId, url) {
   console.log(`[${taskId}] Starting scrape for: ${url}`);
   let browser;
@@ -23,15 +23,18 @@ async function performScraping(taskId, url) {
     });
 
     page = await browser.newPage();
-
-    // --- FIX: Set currency and region via URL parameters ---
-    // This is more reliable than setting cookies, which can be forbidden.
+    
     const urlWithParams = `${url}${url.includes('?') ? '&' : '?'}currency=USD&ship_to=US`;
     console.log(`[${taskId}] Navigating to page with USD currency: ${urlWithParams}`);
     await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
-    console.log(`[${taskId}] Waiting for product details to load...`);
+    console.log(`[${taskId}] Waiting for product info to load...`);
     await page.waitForSelector('[class*="sku--wrap"]', { timeout: 90000 });
+
+    // --- NEW: Explicitly wait for the description section to ensure it's loaded ---
+    console.log(`[${taskId}] Waiting for product description section...`);
+    await page.waitForSelector('#product-description', { timeout: 60000 });
+
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
 
     // --- 1. EXTRACT ALL STATIC AND SEMI-STATIC DATA ---
@@ -65,8 +68,11 @@ async function performScraping(taskId, url) {
             });
         });
 
-        // Extract images from the description section
-        const descriptionImages = Array.from(document.querySelectorAll('#product-description img')).map(img => img.src);
+        // --- UPDATED: Robustly extract all images from within the description div ---
+        const descriptionContainer = document.querySelector('#product-description');
+        const descriptionImages = descriptionContainer 
+            ? Array.from(descriptionContainer.querySelectorAll('img')).map(img => img.src) 
+            : [];
 
         return {
             title: getText('h1[data-pl="product-title"]'),
@@ -86,6 +92,8 @@ async function performScraping(taskId, url) {
         };
     });
     
+    console.log(`[${taskId}] Found ${pageData.description.images.length} images in the description.`);
+
     // --- 2. DYNAMICALLY EXTRACT PRICE VARIATIONS ---
     console.log(`[${taskId}] Extracting dynamic price variations...`);
     const priceVariations = [];
@@ -100,7 +108,6 @@ async function performScraping(taskId, url) {
         for (const sizeEl of sizeElements) {
             await sizeEl.click();
             
-            // RELIABLE WAIT: Wait for the price to actually update in the DOM
             try {
                 await page.waitForSelector('.price-default--current--F8OlYIo', { timeout: 5000 });
             } catch (e) {
