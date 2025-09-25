@@ -9,7 +9,7 @@ const BROWSER_WS = process.env.BROWSER_WS;
 // --- STATE MANAGEMENT ---
 const tasks = {};
 
-// --- THE SCRAPER FUNCTION (UPDATED WITH SCROLLING) ---
+// --- THE SCRAPER FUNCTION (UPDATED WITH CONDITIONAL LOGIC) ---
 async function performScraping(taskId, url) {
   console.log(`[${taskId}] Starting scrape for: ${url}`);
   let browser;
@@ -31,12 +31,11 @@ async function performScraping(taskId, url) {
     console.log(`[${taskId}] Waiting for product info to load...`);
     await page.waitForSelector('[class*="sku--wrap"]', { timeout: 90000 });
 
-    // --- NEW: Scroll down to trigger lazy-loaded content ---
     console.log(`[${taskId}] Scrolling page to load all content...`);
     await page.evaluate(async () => {
         await new Promise((resolve) => {
             let totalHeight = 0;
-            const distance = 200; // Scroll by 200px increments
+            const distance = 200;
             const timer = setInterval(() => {
                 const scrollHeight = document.body.scrollHeight;
                 window.scrollBy(0, distance);
@@ -45,12 +44,11 @@ async function performScraping(taskId, url) {
                     clearInterval(timer);
                     resolve();
                 }
-            }, 100); // Scroll every 100ms
+            }, 100);
         });
     });
     console.log(`[${taskId}] Scrolling complete.`);
 
-    // --- Wait for the description, but don't fail if it's missing ---
     console.log(`[${taskId}] Waiting for product description section...`);
     try {
       await page.waitForSelector('#product-description', { timeout: 15000 });
@@ -119,21 +117,51 @@ async function performScraping(taskId, url) {
     const colorElements = await page.$$('[class*="sku-item--image"]');
     const sizeElements = await page.$$('[class*="sku-item--text"]');
     
-    for (const colorEl of colorElements) {
-        await colorEl.click();
-        await new Promise(resolve => setTimeout(resolve, 300));
-        const currentColorName = await colorEl.$eval('img', img => img.alt);
+    // --- UPDATED LOGIC: Handle products with and without size variations ---
+    if (sizeElements.length > 0) {
+        console.log(`[${taskId}] Found ${colorElements.length} colors and ${sizeElements.length} sizes. Using nested loop.`);
+        for (const colorEl of colorElements) {
+            await colorEl.click();
+            await new Promise(resolve => setTimeout(resolve, 300));
+            const currentColorName = await colorEl.$eval('img', img => img.alt);
 
-        for (const sizeEl of sizeElements) {
-            await sizeEl.click();
-            
-            try {
-                await page.waitForSelector('.price-default--current--F8OlYIo', { timeout: 5000 });
-            } catch (e) {
-                console.log(`[${taskId}] Price element did not appear for ${currentColorName}, skipping.`);
-                continue;
+            for (const sizeEl of sizeElements) {
+                await sizeEl.click();
+                
+                try {
+                    await page.waitForSelector('.price-default--current--F8OlYIo', { timeout: 5000 });
+                } catch (e) {
+                    console.log(`[${taskId}] Price element did not appear for ${currentColorName}, skipping.`);
+                    continue;
+                }
+
+                const variationData = await page.evaluate(() => {
+                    const getText = (selector) => document.querySelector(selector)?.innerText.trim() || null;
+                    return {
+                        currentPrice: getText('.price-default--current--F8OlYIo'),
+                        originalPrice: getText('.price-default--original--CWcHOit'),
+                        discount: getText('.price-default--bannerSupplementary--o399nvO'),
+                    };
+                });
+
+                const currentSizeName = await sizeEl.evaluate(el => el.title || el.innerText.trim());
+                
+                priceVariations.push({
+                    color: currentColorName,
+                    size: currentSizeName,
+                    ...variationData
+                });
             }
+        }
+    } else if (colorElements.length > 0) {
+        console.log(`[${taskId}] Found ${colorElements.length} colors and no sizes. Using single loop.`);
+        for (const colorEl of colorElements) {
+            await colorEl.click();
+            // Wait a moment for the price to update after the click
+            await new Promise(resolve => setTimeout(resolve, 500));
 
+            const currentColorName = await colorEl.$eval('img', img => img.alt);
+            
             const variationData = await page.evaluate(() => {
                 const getText = (selector) => document.querySelector(selector)?.innerText.trim() || null;
                 return {
@@ -143,14 +171,27 @@ async function performScraping(taskId, url) {
                 };
             });
 
-            const currentSizeName = await sizeEl.evaluate(el => el.title || el.innerText.trim());
-            
             priceVariations.push({
                 color: currentColorName,
-                size: currentSizeName,
+                size: null, // No size available for this variation
                 ...variationData
             });
         }
+    } else {
+        console.log(`[${taskId}] No product variations found. Extracting main price only.`);
+        const mainPriceData = await page.evaluate(() => {
+             const getText = (selector) => document.querySelector(selector)?.innerText.trim() || null;
+             return {
+                 currentPrice: getText('.price-default--current--F8OlYIo'),
+                 originalPrice: getText('.price-default--original--CWcHOit'),
+                 discount: getText('.price-default--bannerSupplementary--o399nvO'),
+             };
+        });
+        priceVariations.push({
+            color: null,
+            size: null,
+            ...mainPriceData
+        });
     }
     
     // --- 3. ASSEMBLE THE FINAL DATA OBJECT ---
@@ -243,4 +284,3 @@ const server = app.listen(PORT, () => {
 
 server.keepAliveTimeout = 120 * 1000;
 server.headersTimeout = 120 * 1000;
-
