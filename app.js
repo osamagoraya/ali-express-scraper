@@ -24,16 +24,11 @@ async function performScraping(taskId, url) {
 
     page = await browser.newPage();
 
-    // --- FIX: Set currency to USD and region to US before navigating ---
-    console.log(`[${taskId}] Setting region to US and currency to USD...`);
-    await page.setCookie({
-        name: 'aep_usuc_f',
-        value: 'site=glo&c_tp=USD&region=US&b_locale=en_US',
-        domain: '.aliexpress.com'
-    });
-
-    console.log(`[${taskId}] Navigating to page...`);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    // --- FIX: Set currency and region via URL parameters ---
+    // This is more reliable than setting cookies, which can be forbidden.
+    const urlWithParams = `${url}${url.includes('?') ? '&' : '?'}currency=USD&ship_to=US`;
+    console.log(`[${taskId}] Navigating to page with USD currency: ${urlWithParams}`);
+    await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
 
     console.log(`[${taskId}] Waiting for product details to load...`);
     await page.waitForSelector('[class*="sku--wrap"]', { timeout: 90000 });
@@ -222,4 +217,3 @@ const server = app.listen(PORT, () => {
 
 server.keepAliveTimeout = 120 * 1000;
 server.headersTimeout = 120 * 1000;
-
