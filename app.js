@@ -5,6 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 // --- CONFIGURATION ---
 const PORT = process.env.PORT || 3000;
 const BROWSER_WS = process.env.BROWSER_WS;
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
+
 
 // --- STATE MANAGEMENT ---
 const tasks = {};
@@ -18,7 +20,7 @@ async function performScraping(taskId, url) {
   const maxRetries = 3;
   let lastError = null;
 
-  // --- NEW: Retry loop for connection and navigation ---
+  // --- Retry loop for connection and navigation ---
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // Standardize the URL
@@ -40,10 +42,18 @@ async function performScraping(taskId, url) {
       });
 
       page = await browser.newPage();
+      await page.setUserAgent(USER_AGENT);
       
       const urlWithParams = `${standardizedUrl}${standardizedUrl.includes('?') ? '&' : '?'}currency=USD&ship_to=US`;
       console.log(`[${taskId}] Navigating to: ${urlWithParams}`);
       await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      
+      // --- NEW: Check for fake 404 page after loading ---
+      const bodyHtml = await page.evaluate(() => document.body.innerHTML);
+      if (bodyHtml.includes('Sorry, the page you requested can not be found')) {
+          console.warn(`[${taskId}] Detected a 404 page on attempt ${attempt}. This is likely a temporary block.`);
+          throw new Error('AliExpress served a temporary 404 page.'); // This will trigger the catch block for a retry
+      }
       
       console.log(`[${taskId}] Successfully connected and navigated on attempt ${attempt}.`);
       lastError = null; // Clear last error on success
@@ -56,8 +66,9 @@ async function performScraping(taskId, url) {
         await browser.close();
       }
       if (attempt < maxRetries) {
-        console.log(`[${taskId}] Waiting 5 seconds before retrying...`);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // --- CHANGE: Increased retry delay to 10 seconds ---
+        console.log(`[${taskId}] Waiting 10 seconds before retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 10000));
       }
     }
   }
