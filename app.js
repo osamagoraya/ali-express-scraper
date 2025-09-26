@@ -9,57 +9,85 @@ const BROWSER_WS = process.env.BROWSER_WS;
 // --- STATE MANAGEMENT ---
 const tasks = {};
 
-// --- THE SCRAPER FUNCTION (UPDATED WITH URL STANDARDIZATION) ---
+// --- THE SCRAPER FUNCTION ---
 async function performScraping(taskId, url) {
   console.log(`[${taskId}] Starting scrape for: ${url}`);
   let browser;
-  let page; 
+  let page;
+  
+  const maxRetries = 3;
+  let lastError = null;
 
-  try {
-    // --- Standardize the URL to use www.aliexpress.com ---
-    let standardizedUrl = url;
+  // --- NEW: Retry loop for connection and navigation ---
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
+      // Standardize the URL
+      let standardizedUrl = url;
+      try {
         const urlObject = new URL(url);
         if (urlObject.hostname.endsWith('aliexpress.com')) {
-            urlObject.hostname = 'www.aliexpress.com';
-            standardizedUrl = urlObject.toString();
-            console.log(`[${taskId}] Standardized URL to: ${standardizedUrl}`);
+          urlObject.hostname = 'www.aliexpress.com';
+          standardizedUrl = urlObject.toString();
         }
-    } catch (e) {
-        console.error(`[${taskId}] Could not parse URL, using original: ${url}`);
+      } catch (e) {
+        console.error(`[${taskId}] Could not parse URL, using original.`);
+      }
+
+      console.log(`[${taskId}] Attempt ${attempt}/${maxRetries}: Connecting to Bright Data browser...`);
+      browser = await puppeteer.connect({
+        browserWSEndpoint: BROWSER_WS,
+        defaultViewport: { width: 1366, height: 768 }
+      });
+
+      page = await browser.newPage();
+      
+      const urlWithParams = `${standardizedUrl}${standardizedUrl.includes('?') ? '&' : '?'}currency=USD&ship_to=US`;
+      console.log(`[${taskId}] Navigating to: ${urlWithParams}`);
+      await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      
+      console.log(`[${taskId}] Successfully connected and navigated on attempt ${attempt}.`);
+      lastError = null; // Clear last error on success
+      break; // Exit retry loop on success
+
+    } catch (err) {
+      lastError = err;
+      console.error(`[${taskId}] Attempt ${attempt}/${maxRetries} failed: ${err.message}`);
+      if (browser) {
+        await browser.close();
+      }
+      if (attempt < maxRetries) {
+        console.log(`[${taskId}] Waiting 5 seconds before retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
     }
+  }
 
-    console.log(`[${taskId}] Connecting to Bright Data browser...`);
-    browser = await puppeteer.connect({
-      browserWSEndpoint: BROWSER_WS,
-      defaultViewport: { width: 1366, height: 768 }
-    });
+  // If all retries failed, lastError will not be null
+  if (lastError) {
+      console.error(`[${taskId}] All connection attempts failed. Failing task.`);
+      tasks[taskId].status = 'failed';
+      tasks[taskId].error = `All connection attempts failed. Last error: ${lastError.message}`;
+      return; // Stop execution
+  }
 
-    page = await browser.newPage();
-    
-    const urlWithParams = `${standardizedUrl}${standardizedUrl.includes('?') ? '&' : '?'}currency=USD&ship_to=US`;
-    console.log(`[${taskId}] Navigating to page with USD currency: ${urlWithParams}`);
-    await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
-
+  // --- Main scraping logic starts here, only if connection was successful ---
+  try {
     console.log(`[${taskId}] Waiting for product info to load...`);
     try {
-      // --- CHANGE: Increased timeout to 110 seconds for more reliability ---
       await page.waitForSelector('[class*="sku--wrap"]', { timeout: 110000 });
     } catch(e) {
-        console.error(`[${taskId}] CRITICAL: Timed out waiting for main product info. This might be a captcha or a page load issue.`);
-        // --- NEW: Take a screenshot on failure for easier debugging ---
+        console.error(`[${taskId}] CRITICAL: Timed out waiting for main product info.`);
         const screenshotBuffer = await page.screenshot({ encoding: 'base64' });
         console.error(`[${taskId}] Screenshot on failure (base64): data:image/png;base64,${screenshotBuffer}`);
-        throw e; // Re-throw the error to fail the task
+        throw e;
     }
 
-    // --- REVISED SCROLLING LOGIC ---
     console.log(`[${taskId}] Scrolling page to trigger lazy-loading...`);
     await page.evaluate(async () => {
         await new Promise((resolve) => {
             let totalHeight = 0;
-            const distance = 300; // Scroll a bit further each time
-            const scrollDelay = 150; // Wait a bit between scrolls
+            const distance = 300;
+            const scrollDelay = 150;
             const timer = setInterval(() => {
                 const scrollHeight = document.body.scrollHeight;
                 window.scrollBy(0, distance);
@@ -75,7 +103,6 @@ async function performScraping(taskId, url) {
 
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
 
-    // --- 1. EXTRACT ALL STATIC AND SEMI-STATIC DATA ---
     const pageData = await page.evaluate(() => {
         const getText = (selector) => document.querySelector(selector)?.innerText.trim() || null;
         const getHtml = (selector) => document.querySelector(selector)?.outerHTML || null;
@@ -103,7 +130,6 @@ async function performScraping(taskId, url) {
             });
         });
 
-        // --- REVISED DESCRIPTION EXTRACTION LOGIC ---
         const descriptionSelectors = ['#product-description', '[id="nav-description"]', '[class*="description--wrap"]'];
         let descriptionContainer = null;
         for (const selector of descriptionSelectors) {
@@ -135,13 +161,11 @@ async function performScraping(taskId, url) {
     
     console.log(`[${taskId}] Found ${pageData.description.images.length} images in the description.`);
 
-    // --- 2. DYNAMICALLY EXTRACT PRICE VARIATIONS ---
     console.log(`[${taskId}] Extracting dynamic price variations...`);
     const priceVariations = [];
     const colorElements = await page.$$('[class*="sku-item--image"]');
     const sizeElements = await page.$$('[class*="sku-item--text"]');
     
-    // --- UPDATED LOGIC: Handle products with and without size variations ---
     if (sizeElements.length > 0) {
         console.log(`[${taskId}] Found ${colorElements.length} colors and ${sizeElements.length} sizes. Using nested loop.`);
         for (const colorEl of colorElements) {
@@ -181,9 +205,7 @@ async function performScraping(taskId, url) {
         console.log(`[${taskId}] Found ${colorElements.length} colors and no sizes. Using single loop.`);
         for (const colorEl of colorElements) {
             await colorEl.click();
-            // Wait a moment for the price to update after the click
             await new Promise(resolve => setTimeout(resolve, 500));
-
             const currentColorName = await colorEl.$eval('img', img => img.alt);
             
             const variationData = await page.evaluate(() => {
@@ -197,7 +219,7 @@ async function performScraping(taskId, url) {
 
             priceVariations.push({
                 color: currentColorName,
-                size: null, // No size available for this variation
+                size: null,
                 ...variationData
             });
         }
@@ -218,7 +240,6 @@ async function performScraping(taskId, url) {
         });
     }
     
-    // --- 3. ASSEMBLE THE FINAL DATA OBJECT ---
     const finalData = {
         title: pageData.title,
         currentPrice: priceVariations.length > 0 ? priceVariations[0].currentPrice : null,
@@ -249,11 +270,7 @@ async function performScraping(taskId, url) {
     };
 
   } catch (err) {
-    console.error(`[${taskId}] Error during scraping:`, err.message);
-    if (page) {
-        const pageContent = await page.content();
-        console.error(`[${taskId}] Page HTML on failure (first 2000 chars):`, pageContent.substring(0, 2000));
-    }
+    console.error(`[${taskId}] Error during scraping logic:`, err.message);
     tasks[taskId].status = 'failed';
     tasks[taskId].error = err.message;
   } finally {
@@ -308,4 +325,3 @@ const server = app.listen(PORT, () => {
 
 server.keepAliveTimeout = 120 * 1000;
 server.headersTimeout = 120 * 1000;
-
