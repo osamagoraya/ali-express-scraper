@@ -92,35 +92,22 @@ async function performScraping(taskId, url) {
         throw e;
     }
 
-    // --- REVISED: Simplified and more direct lazy-loading handler ---
-    console.log(`[${taskId}] Checking for and scrolling to description section...`);
-    const descriptionSelectors = ['#product-description', '#nav-description', '[class*="description--wrap"]'];
-    const descriptionSelector = await page.evaluate((selectors) => {
-        for (const selector of selectors) {
-            const el = document.querySelector(selector);
-            if (el) return selector;
-        }
-        return null;
-    }, descriptionSelectors);
+    // --- REVISED: More direct lazy-loading handler for description ---
+    console.log(`[${taskId}] Attempting to reveal description by clicking navigation link...`);
+    try {
+        const descriptionNavLinkSelector = 'a[href="#nav-description"]';
+        await page.waitForSelector(descriptionNavLinkSelector, { timeout: 5000 });
+        await page.click(descriptionNavLinkSelector);
+        console.log(`[${taskId}] Clicked description navigation link.`);
 
-    if (descriptionSelector) {
-        console.log(`[${taskId}] Found description section with selector: ${descriptionSelector}. Scrolling it into view.`);
-        try {
-            await page.evaluate(selector => {
-                const element = document.querySelector(selector);
-                if (element) {
-                    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                }
-            }, descriptionSelector);
-            // Wait a moment for lazy-load scripts to fire after scrolling.
-            await new Promise(resolve => setTimeout(resolve, 1500)); 
-            console.log(`[${taskId}] Description scrolled into view.`);
-        } catch (e) {
-            console.warn(`[${taskId}] Warning: Could not scroll to description section: ${e.message}`);
-        }
-    } else {
-        console.warn(`[${taskId}] Warning: Product description section not found on the page.`);
+        // After clicking, wait for an image to appear inside the target section.
+        const imageSelectorInDescription = '#nav-description img';
+        await page.waitForSelector(imageSelectorInDescription, { timeout: 10000 });
+        console.log(`[${taskId}] Images successfully loaded in description.`);
+    } catch (e) {
+        console.warn(`[${taskId}] Warning: Could not click description link or find images after clicking. This product might have a different layout or no description images. Error: ${e.message}`);
     }
+
 
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
 
