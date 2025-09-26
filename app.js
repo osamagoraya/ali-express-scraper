@@ -48,7 +48,7 @@ async function performScraping(taskId, url) {
       console.log(`[${taskId}] Navigating to: ${urlWithParams}`);
       await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
       
-      // --- NEW: Check for fake 404 page after loading ---
+      // --- Check for fake 404 page after loading ---
       const bodyHtml = await page.evaluate(() => document.body.innerHTML);
       if (bodyHtml.includes('Sorry, the page you requested can not be found')) {
           console.warn(`[${taskId}] Detected a 404 page on attempt ${attempt}. This is likely a temporary block.`);
@@ -66,7 +66,6 @@ async function performScraping(taskId, url) {
         await browser.close();
       }
       if (attempt < maxRetries) {
-        // --- CHANGE: Increased retry delay to 10 seconds ---
         console.log(`[${taskId}] Waiting 10 seconds before retrying...`);
         await new Promise(resolve => setTimeout(resolve, 10000));
       }
@@ -93,34 +92,50 @@ async function performScraping(taskId, url) {
         throw e;
     }
 
-    console.log(`[${taskId}] Scrolling page to trigger lazy-loading...`);
-    await page.evaluate(async () => {
-        await new Promise((resolve) => {
-            let totalHeight = 0;
-            const distance = 300;
-            const scrollDelay = 150;
-            const timer = setInterval(() => {
-                const scrollHeight = document.body.scrollHeight;
-                window.scrollBy(0, distance);
-                totalHeight += distance;
-                if (totalHeight >= scrollHeight - window.innerHeight) {
-                    clearInterval(timer);
-                    resolve();
+    // --- REVISED: Simplified and more direct lazy-loading handler ---
+    console.log(`[${taskId}] Checking for and scrolling to description section...`);
+    const descriptionSelectors = ['#product-description', '#nav-description', '[class*="description--wrap"]'];
+    const descriptionSelector = await page.evaluate((selectors) => {
+        for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el) return selector;
+        }
+        return null;
+    }, descriptionSelectors);
+
+    if (descriptionSelector) {
+        console.log(`[${taskId}] Found description section with selector: ${descriptionSelector}. Scrolling it into view.`);
+        try {
+            await page.evaluate(selector => {
+                const element = document.querySelector(selector);
+                if (element) {
+                    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 }
-            }, scrollDelay);
-        });
-    });
-    console.log(`[${taskId}] Scrolling complete.`);
+            }, descriptionSelector);
+            // Wait a moment for lazy-load scripts to fire after scrolling.
+            await new Promise(resolve => setTimeout(resolve, 1500)); 
+            console.log(`[${taskId}] Description scrolled into view.`);
+        } catch (e) {
+            console.warn(`[${taskId}] Warning: Could not scroll to description section: ${e.message}`);
+        }
+    } else {
+        console.warn(`[${taskId}] Warning: Product description section not found on the page.`);
+    }
 
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
 
     const pageData = await page.evaluate(() => {
         const getText = (selector) => document.querySelector(selector)?.innerText.trim() || null;
         const getHtml = (selector) => document.querySelector(selector)?.outerHTML || null;
+        // --- Robust image URL cleaner function ---
+        const cleanImageUrl = (url) => {
+            if (!url) return null;
+            return url.split('?')[0].replace(/_\d+x\d+q\d+\.jpg(?:_\.avif|\.webp)?$/, '');
+        };
 
         const availableColors = Array.from(document.querySelectorAll('[class*="sku-item--image"]')).map(el => ({
             name: el.querySelector('img')?.alt || null,
-            image: el.querySelector('img')?.src.replace('_220x220q75.jpg_.avif', '') || null,
+            image: cleanImageUrl(el.querySelector('img')?.src),
             isSelected: el.classList.contains('sku-item--selected')
         }));
         
@@ -141,7 +156,7 @@ async function performScraping(taskId, url) {
             });
         });
 
-        const descriptionSelectors = ['#product-description', '[id="nav-description"]', '[class*="description--wrap"]'];
+        const descriptionSelectors = ['#product-description', '#nav-description', '[class*="description--wrap"]'];
         let descriptionContainer = null;
         for (const selector of descriptionSelectors) {
             descriptionContainer = document.querySelector(selector);
@@ -149,14 +164,14 @@ async function performScraping(taskId, url) {
         }
 
         const descriptionImages = descriptionContainer 
-            ? Array.from(descriptionContainer.querySelectorAll('img')).map(img => img.src) 
+            ? Array.from(descriptionContainer.querySelectorAll('img')).map(img => cleanImageUrl(img.src)) 
             : [];
 
         return {
             title: getText('h1[data-pl="product-title"]'),
             bulkPrice: getText('[class*="banner-promotion-enhance--text"]'),
             coupon: getText('[class*="coupon-block--content"]'),
-            mainImages: Array.from(document.querySelectorAll('[class*="slider--img"] img')).map(img => img.src.replace('_.avif', '')),
+            mainImages: Array.from(document.querySelectorAll('[class*="slider--img"] img')).map(img => cleanImageUrl(img.src)),
             availableColors,
             availableSizes,
             selectedColor: availableColors.find(c => c.isSelected)?.name || null,
@@ -170,7 +185,13 @@ async function performScraping(taskId, url) {
         };
     });
     
-    console.log(`[${taskId}] Found ${pageData.description.images.length} images in the description.`);
+    // --- Fallback for description images ---
+    if (pageData.description.images.length === 0 && pageData.mainImages.length > 0) {
+        console.log(`[${taskId}] No images found in description. Using main product images as a fallback.`);
+        pageData.description.images = pageData.mainImages;
+    }
+    
+    console.log(`[${taskId}] Found ${pageData.description.images.length} total images for description.`);
 
     console.log(`[${taskId}] Extracting dynamic price variations...`);
     const priceVariations = [];
