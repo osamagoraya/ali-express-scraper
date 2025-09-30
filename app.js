@@ -123,12 +123,12 @@ async function performScraping(taskId, url) {
         const availableColors = Array.from(document.querySelectorAll('[class*="sku-item--image"]')).map(el => ({
             name: el.querySelector('img')?.alt || null,
             image: cleanImageUrl(el.querySelector('img')?.src),
-            isSelected: el.classList.contains('sku-item--selected')
+            isSelected: el.className.includes('sku-item--selected')
         }));
         
         const availableSizes = Array.from(document.querySelectorAll('[class*="sku-item--text"]')).map(el => ({
             size: el.title || el.innerText.trim(),
-            isSelected: el.classList.contains('sku-item--selected')
+            isSelected: el.className.includes('sku-item--selected')
         }));
 
         const specifications = {};
