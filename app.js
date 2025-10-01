@@ -48,16 +48,15 @@ async function performScraping(taskId, url) {
       console.log(`[${taskId}] Navigating to: ${urlWithParams}`);
       await page.goto(urlWithParams, { waitUntil: 'domcontentloaded', timeout: 120000 });
       
-      // --- Check for fake 404 page after loading ---
       const bodyHtml = await page.evaluate(() => document.body.innerHTML);
       if (bodyHtml.includes('Sorry, the page you requested can not be found')) {
           console.warn(`[${taskId}] Detected a 404 page on attempt ${attempt}. This is likely a temporary block.`);
-          throw new Error('AliExpress served a temporary 404 page.'); // This will trigger the catch block for a retry
+          throw new Error('AliExpress served a temporary 404 page.');
       }
       
       console.log(`[${taskId}] Successfully connected and navigated on attempt ${attempt}.`);
-      lastError = null; // Clear last error on success
-      break; // Exit retry loop on success
+      lastError = null;
+      break;
 
     } catch (err) {
       lastError = err;
@@ -72,15 +71,13 @@ async function performScraping(taskId, url) {
     }
   }
 
-  // If all retries failed, lastError will not be null
   if (lastError) {
       console.error(`[${taskId}] All connection attempts failed. Failing task.`);
       tasks[taskId].status = 'failed';
       tasks[taskId].error = `All connection attempts failed. Last error: ${lastError.message}`;
-      return; // Stop execution
+      return;
   }
 
-  // --- Main scraping logic starts here, only if connection was successful ---
   try {
     console.log(`[${taskId}] Waiting for product info to load...`);
     try {
@@ -92,29 +89,41 @@ async function performScraping(taskId, url) {
         throw e;
     }
 
-    // --- REVISED: More direct lazy-loading handler for description ---
-    console.log(`[${taskId}] Attempting to reveal description by clicking navigation link...`);
-    try {
-        const descriptionNavLinkSelector = 'a[href="#nav-description"]';
-        await page.waitForSelector(descriptionNavLinkSelector, { timeout: 5000 });
-        await page.click(descriptionNavLinkSelector);
-        console.log(`[${taskId}] Clicked description navigation link.`);
+    // --- REVISED: Added retry logic for revealing description ---
+    let descriptionImagesFound = false;
+    for (let descAttempt = 1; descAttempt <= 2; descAttempt++) {
+        try {
+            console.log(`[${taskId}] Description attempt ${descAttempt}/2: Clicking navigation link...`);
+            const descriptionNavLinkSelector = 'a[href="#nav-description"]';
+            await page.waitForSelector(descriptionNavLinkSelector, { timeout: 5000 });
+            await page.click(descriptionNavLinkSelector);
+            console.log(`[${taskId}] Clicked description navigation link.`);
 
-        // After clicking, wait for an image to appear inside the target section.
-        const imageSelectorInDescription = '#nav-description img';
-        await page.waitForSelector(imageSelectorInDescription, { timeout: 10000 });
-        console.log(`[${taskId}] Images successfully loaded in description.`);
-    } catch (e) {
-        console.warn(`[${taskId}] Warning: Could not click description link or find images after clicking. This product might have a different layout or no description images. Error: ${e.message}`);
+            const imageSelectorInDescription = '#nav-description img';
+            await page.waitForSelector(imageSelectorInDescription, { timeout: 10000 });
+            
+            console.log(`[${taskId}] Images successfully loaded in description on attempt ${descAttempt}.`);
+            descriptionImagesFound = true;
+            break; // Success, exit the loop
+        } catch (e) {
+            console.warn(`[${taskId}] Description attempt ${descAttempt}/2 failed. Error: ${e.message}`);
+            if (descAttempt < 2) {
+                console.log(`[${taskId}] Reloading page and trying again...`);
+                await page.reload({ waitUntil: 'domcontentloaded' });
+                // We must wait for the main product info again after a reload
+                await page.waitForSelector('[class*="sku--wrap"]', { timeout: 60000 });
+            }
+        }
     }
-
+    if (!descriptionImagesFound) {
+         console.warn(`[${taskId}] All attempts to find description images failed. Continuing...`);
+    }
 
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
 
     const pageData = await page.evaluate(() => {
         const getText = (selector) => document.querySelector(selector)?.innerText.trim() || null;
         const getHtml = (selector) => document.querySelector(selector)?.outerHTML || null;
-        // --- Robust image URL cleaner function ---
         const cleanImageUrl = (url) => {
             if (!url) return null;
             return url.split('?')[0].replace(/_\d+x\d+q\d+\.jpg(?:_\.avif|\.webp)?$/, '');
@@ -143,11 +152,15 @@ async function performScraping(taskId, url) {
             });
         });
 
-        const descriptionSelectors = ['#product-description', '#nav-description', '[class*="description--wrap"]'];
+        // --- RESTORED: Flexible logic for finding description container ---
+        const descriptionSelectors = ['#product-description', '#nav-description'];
         let descriptionContainer = null;
         for (const selector of descriptionSelectors) {
-            descriptionContainer = document.querySelector(selector);
-            if (descriptionContainer) break;
+            const container = document.querySelector(selector);
+            if (container && container.querySelector('img')) {
+                descriptionContainer = container;
+                break;
+            }
         }
 
         const descriptionImages = descriptionContainer 
@@ -172,7 +185,6 @@ async function performScraping(taskId, url) {
         };
     });
     
-    // --- Fallback for description images ---
     if (pageData.description.images.length === 0 && pageData.mainImages.length > 0) {
         console.log(`[${taskId}] No images found in description. Using main product images as a fallback.`);
         pageData.description.images = pageData.mainImages;
