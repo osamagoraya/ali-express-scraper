@@ -79,6 +79,15 @@ async function performScraping(taskId, url) {
   }
 
   try {
+    // --- NEW: Log page title for diagnostics ---
+    const pageTitle = await page.title();
+    console.log(`[${taskId}] Page loaded with title: "${pageTitle}"`);
+
+    // --- NEW: Add a small random delay to mimic human behavior ---
+    const randomDelay = Math.floor(Math.random() * 2000) + 1000; // 1-3 seconds
+    console.log(`[${taskId}] Pausing for ${randomDelay}ms...`);
+    await new Promise(resolve => setTimeout(resolve, randomDelay));
+
     console.log(`[${taskId}] Waiting for product info to load...`);
     try {
       await page.waitForSelector('[class*="sku--wrap"]', { timeout: 110000 });
