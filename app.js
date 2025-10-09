@@ -53,6 +53,10 @@ async function performScraping(taskId, url) {
           console.warn(`[${taskId}] Detected a 404 page on attempt ${attempt}. This is likely a temporary block.`);
           throw new Error('AliExpress served a temporary 404 page.');
       }
+      if (bodyHtml.includes('unusual traffic from your network')) {
+          console.warn(`[${taskId}] Detected 'unusual traffic' popup on attempt ${attempt}.`);
+          throw new Error('AliExpress bot detection triggered.');
+      }
       
       console.log(`[${taskId}] Successfully connected and navigated on attempt ${attempt}.`);
       lastError = null;
@@ -79,11 +83,9 @@ async function performScraping(taskId, url) {
   }
 
   try {
-    // --- NEW: Log page title for diagnostics ---
     const pageTitle = await page.title();
     console.log(`[${taskId}] Page loaded with title: "${pageTitle}"`);
 
-    // --- NEW: Add a small random delay to mimic human behavior ---
     const randomDelay = Math.floor(Math.random() * 2000) + 1000; // 1-3 seconds
     console.log(`[${taskId}] Pausing for ${randomDelay}ms...`);
     await new Promise(resolve => setTimeout(resolve, randomDelay));
@@ -98,34 +100,21 @@ async function performScraping(taskId, url) {
         throw e;
     }
 
-    // --- REVISED: Added retry logic for revealing description ---
-    let descriptionImagesFound = false;
-    for (let descAttempt = 1; descAttempt <= 2; descAttempt++) {
-        try {
-            console.log(`[${taskId}] Description attempt ${descAttempt}/2: Clicking navigation link...`);
-            const descriptionNavLinkSelector = 'a[href="#nav-description"]';
-            await page.waitForSelector(descriptionNavLinkSelector, { timeout: 5000 });
-            await page.click(descriptionNavLinkSelector);
-            console.log(`[${taskId}] Clicked description navigation link.`);
+    // --- FINAL ROBUST SCROLLING LOGIC ---
+    try {
+        console.log(`[${taskId}] Attempting to reveal description by scrolling...`);
+        const descriptionSelector = '#product-description';
+        
+        await page.waitForSelector(descriptionSelector, { timeout: 10000 });
 
-            const imageSelectorInDescription = '#nav-description img';
-            await page.waitForSelector(imageSelectorInDescription, { timeout: 10000 });
-            
-            console.log(`[${taskId}] Images successfully loaded in description on attempt ${descAttempt}.`);
-            descriptionImagesFound = true;
-            break; // Success, exit the loop
-        } catch (e) {
-            console.warn(`[${taskId}] Description attempt ${descAttempt}/2 failed. Error: ${e.message}`);
-            if (descAttempt < 2) {
-                console.log(`[${taskId}] Reloading page and trying again...`);
-                await page.reload({ waitUntil: 'domcontentloaded' });
-                // We must wait for the main product info again after a reload
-                await page.waitForSelector('[class*="sku--wrap"]', { timeout: 60000 });
-            }
-        }
-    }
-    if (!descriptionImagesFound) {
-         console.warn(`[${taskId}] All attempts to find description images failed. Continuing...`);
+        await page.evaluate(selector => {
+            document.querySelector(selector)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, descriptionSelector);
+
+        await page.waitForSelector(`${descriptionSelector} img`, { timeout: 15000 });
+        console.log(`[${taskId}] Images successfully loaded in description after scrolling.`);
+    } catch (e) {
+        console.warn(`[${taskId}] Warning: Could not find or load description images after scrolling. This product may have a different layout or no description images. Error: ${e.message}`);
     }
 
     console.log(`[${taskId}] Product details loaded. Starting data extraction.`);
@@ -161,17 +150,7 @@ async function performScraping(taskId, url) {
             });
         });
 
-        // --- RESTORED: Flexible logic for finding description container ---
-        const descriptionSelectors = ['#product-description', '#nav-description'];
-        let descriptionContainer = null;
-        for (const selector of descriptionSelectors) {
-            const container = document.querySelector(selector);
-            if (container && container.querySelector('img')) {
-                descriptionContainer = container;
-                break;
-            }
-        }
-
+        const descriptionContainer = document.querySelector('#product-description');
         const descriptionImages = descriptionContainer 
             ? Array.from(descriptionContainer.querySelectorAll('img')).map(img => cleanImageUrl(img.src)) 
             : [];
@@ -297,7 +276,8 @@ async function performScraping(taskId, url) {
         video: null,
         specifications: pageData.specifications,
         description: pageData.description,
-        productHTML: pageData.productHTML
+        productHTML: pageData.productHTML,
+        warning: null // Reset warning, as we are scraping all now
     };
 
     console.log(`[${taskId}] Scraping completed successfully!`);
