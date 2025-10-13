@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 const PORT = process.env.PORT || 3000;
 const BROWSER_WS = process.env.BROWSER_WS;
 const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36';
+const MAX_COLORS_TO_SCRAPE = 5; 
 
 
 // --- STATE MANAGEMENT ---
@@ -181,13 +182,21 @@ async function performScraping(taskId, url) {
     console.log(`[${taskId}] Found ${pageData.description.images.length} total images for description.`);
 
     console.log(`[${taskId}] Extracting dynamic price variations...`);
+    let scrapeWarning = null;
     const priceVariations = [];
     const colorElements = await page.$$('[class*="sku-item--image"]');
     const sizeElements = await page.$$('[class*="sku-item--text"]');
     
+    const colorsToScrape = colorElements.slice(0, MAX_COLORS_TO_SCRAPE);
+
+    if (colorElements.length > MAX_COLORS_TO_SCRAPE) {
+        scrapeWarning = `Product has too many color variations (${colorElements.length}). Scraped the first ${MAX_COLORS_TO_SCRAPE} colors only.`;
+        console.warn(`[${taskId}] ${scrapeWarning}`);
+    }
+    
     if (sizeElements.length > 0) {
-        console.log(`[${taskId}] Found ${colorElements.length} colors and ${sizeElements.length} sizes. Using nested loop.`);
-        for (const colorEl of colorElements) {
+        console.log(`[${taskId}] Scraping ${colorsToScrape.length} colors and ${sizeElements.length} sizes. Using nested loop.`);
+        for (const colorEl of colorsToScrape) {
             await colorEl.click();
             await new Promise(resolve => setTimeout(resolve, 300));
             const currentColorName = await colorEl.$eval('img', img => img.alt);
@@ -220,9 +229,9 @@ async function performScraping(taskId, url) {
                 });
             }
         }
-    } else if (colorElements.length > 0) {
-        console.log(`[${taskId}] Found ${colorElements.length} colors and no sizes. Using single loop.`);
-        for (const colorEl of colorElements) {
+    } else if (colorsToScrape.length > 0) {
+        console.log(`[${taskId}] Found ${colorsToScrape.length} colors and no sizes. Using single loop.`);
+        for (const colorEl of colorsToScrape) {
             await colorEl.click();
             await new Promise(resolve => setTimeout(resolve, 500));
             const currentColorName = await colorEl.$eval('img', img => img.alt);
@@ -277,7 +286,7 @@ async function performScraping(taskId, url) {
         specifications: pageData.specifications,
         description: pageData.description,
         productHTML: pageData.productHTML,
-        warning: null // Reset warning, as we are scraping all now
+        warning: scrapeWarning
     };
 
     console.log(`[${taskId}] Scraping completed successfully!`);
